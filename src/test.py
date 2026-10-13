@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 
 data = pd.read_csv(
-    r"C:\Users\Administrator\data\connections.csv"
+    r"data/connections.csv"
 )
 
 # Remove puzzles with missing words
@@ -26,7 +26,7 @@ for date, group in complete.groupby("puzzle_date"):
 print("Number of puzzles:", len(puzzles))
 print(puzzles[0])
 
-#%%
+
 
 from sentence_transformers import SentenceTransformer
 
@@ -47,7 +47,7 @@ embeddings = embedding_model.encode(
 # Dictionary mapping words to their vectors
 word_embeddings = dict(zip(unique_words, embeddings))
 
-#%%
+
 
 import torch
 import torch.nn as nn
@@ -88,7 +88,7 @@ train_puzzles, test_puzzles = train_test_split(
 X_train, y_train = make_pairs(train_puzzles)
 X_test, y_test = make_pairs(test_puzzles)
 
-#%%
+
 
 class ConnectionsNN(nn.Module):
     def __init__(self):
@@ -111,7 +111,7 @@ model = ConnectionsNN()
 # Correct pairs are less common than incorrect pairs
 loss_function = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([4.0]))
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-#%%
+
 
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -121,7 +121,7 @@ loader = DataLoader(
     shuffle=True
 )
 
-for epoch in range(20):
+for epoch in range(200):
     model.train()
     total_loss = 0
 
@@ -138,7 +138,7 @@ for epoch in range(20):
 
     print(f"Epoch {epoch+1}: Loss = {total_loss:.3f}")
     
-#%%
+
 
 from functools import lru_cache
 

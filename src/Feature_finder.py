@@ -1,7 +1,8 @@
-
 import sqlite3
 import pandas as pd
-import seaborn as sns
+import numpy as np
+from itertools import combinations
+from sentence_transformers import SentenceTransformer
 from config import *
 
 
@@ -43,12 +44,11 @@ def load_database(path):
 # ================================
 
 def clean_encode(words):
+    words = words.copy()
     words["word"] = words["word"].astype("string").str.strip().str.upper()
     words["word_length"] = words["word"].str.len()
     words["color"] = words["color"].str.lower().map(DIFFICULTY_MAP)
     return words
-
-# Standard English Scrabble letter values
 
 
 def _scrabble_score(word):
@@ -56,29 +56,84 @@ def _scrabble_score(word):
         return pd.NA
     return sum(SCRABBLE_VALUES.get(letter, 0) for letter in word)
 
-def add_scrabble_score(words):
-    words["scrabble_score"] = words["word"].apply(_scrabble_score)
 
+def add_scrabble_score(words):
+    words = words.copy()
+    words["scrabble_score"] = words["word"].apply(_scrabble_score)
     words["scrabble_per_letter"] = (
         words["scrabble_score"] / words["word_length"].replace(0, pd.NA)
     )
     return words
 
 
+# ================================
+# Semantic embeddings
+# ================================
+
+def load_encoder(model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
+    """Load a pretrained sentence transformer (downloads on first run)."""
+    return SentenceTransformer(model_name)
 
 
+def add_embeddings(words, encoder=None):
+    """
+    Add a column of normalized embedding vectors.
+    Returns (words_with_embeddings, embeddings_dict).
+    """
+    words = words.copy()
+    if encoder is None:
+        encoder = load_encoder()
 
+    unique_words = words["word"].dropna().unique().tolist()
+    vectors = encoder.encode(
+        unique_words,
+        normalize_embeddings=True,
+        show_progress_bar=True,
+    )
+    emb_dict = dict(zip(unique_words, vectors))
+
+    # Store the vector itself (useful later) – optional, can be dropped if memory is tight
+    words["embedding"] = words["word"].map(emb_dict)
+    return words, emb_dict
+
+
+def _pairwise_cosine_stats(vectors: np.ndarray) -> dict:
+    """
+    Given a (4, dim) matrix of normalized embeddings,
+    return mean / min / max / std of the 6 pairwise cosines.
+    """
+    if len(vectors) != 4:
+        return {
+            "mean_semantic_sim": np.nan,
+            "min_semantic_sim": np.nan,
+            "max_semantic_sim": np.nan,
+            "std_semantic_sim": np.nan,
+        }
+    cosine = vectors @ vectors.T
+    pair_sims = cosine[np.triu_indices(4, k=1)]
+    return {
+        "mean_semantic_sim": float(pair_sims.mean()),
+        "min_semantic_sim": float(pair_sims.min()),
+        "max_semantic_sim": float(pair_sims.max()),
+        "std_semantic_sim": float(pair_sims.std()),
+    }
 
 
 # ================================
 # Group-level features
 # One row per category
 # ================================
-def get_group_features(words):
+
+def get_group_features(words, emb_dict=None):
+    """
+    Compute lexical + semantic features for every (puzzle_date, category) group.
+    If emb_dict is provided, semantic similarity features are added.
+    """
+    # ----- lexical features (your original code) -----
     group_features = (
         words.groupby(group_keys, dropna=False)
         .agg(
-            difficulty=("difficulty", "first"),
+            difficulty=("color", "first"),          # you mapped color → difficulty
             mean_scrabble=("scrabble_score", "mean"),
             max_scrabble=("scrabble_score", "max"),
             min_scrabble=("scrabble_score", "min"),
@@ -90,10 +145,22 @@ def get_group_features(words):
         )
         .reset_index()
     )
-    return group_features
 
-# print("Group-level features:")
-# print(group_features.head())
+    # ----- semantic features -----
+    if emb_dict is not None:
+        semantic_rows = []
+        for keys, group in words.groupby(group_keys, dropna=False):
+            word_list = group["word"].tolist()
+            vectors = np.stack([emb_dict[w] for w in word_list if w in emb_dict])
+            stats = _pairwise_cosine_stats(vectors)
+            row = dict(zip(group_keys, keys if isinstance(keys, tuple) else (keys,)))
+            row.update(stats)
+            semantic_rows.append(row)
+
+        semantic_df = pd.DataFrame(semantic_rows)
+        group_features = group_features.merge(semantic_df, on=group_keys, how="left")
+
+    return group_features
 
 
 # ================================
@@ -101,7 +168,11 @@ def get_group_features(words):
 # One row per puzzle
 # ================================
 
-def get_puzzle_features(words):
+def get_puzzle_features(words, group_features=None):
+    """
+    Puzzle-level aggregates.
+    If group_features (with semantic columns) is passed, those are also aggregated.
+    """
     puzzle_features = (
         words.groupby(puzzle_keys, dropna=False)
         .agg(
@@ -109,9 +180,9 @@ def get_puzzle_features(words):
             max_scrabble=("scrabble_score", "max"),
             mean_word_length=("word_length", "mean"),
             sd_word_length=("word_length", "std"),
-            mean_group_difficulty=("difficulty", "mean"),
-            max_group_difficulty=("difficulty", "max"),
-            min_group_difficulty=("difficulty", "min"),
+            mean_group_difficulty=("color", "mean"),
+            max_group_difficulty=("color", "max"),
+            min_group_difficulty=("color", "min"),
         )
         .reset_index()
     )
@@ -121,9 +192,18 @@ def get_puzzle_features(words):
         - puzzle_features["min_group_difficulty"]
     )
 
+    # Optional: aggregate the semantic group features up to puzzle level
+    if group_features is not None and "mean_semantic_sim" in group_features.columns:
+        sem_agg = (
+            group_features.groupby(puzzle_keys, dropna=False)
+            .agg(
+                mean_group_semantic_sim=("mean_semantic_sim", "mean"),
+                max_group_semantic_sim=("mean_semantic_sim", "max"),
+                min_group_semantic_sim=("mean_semantic_sim", "min"),
+                std_group_semantic_sim=("mean_semantic_sim", "std"),
+            )
+            .reset_index()
+        )
+        puzzle_features = puzzle_features.merge(sem_agg, on=puzzle_keys, how="left")
+
     return puzzle_features
-
-# print("\nPuzzle-level features:")
-# print(puzzle_features.head())
-
-
