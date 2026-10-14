@@ -37,8 +37,8 @@ https://www.fiveletterwords.io/press
 
 Data source: FiveLetterWords  
 Collection method: Automated HTTP retrieval  
-Collection date: [INSERT DATE]  
-Date range: [INSERT START DATE] to [INSERT END DATE]
+Collection date: Not documented in the provided repository snapshot  
+Date range: Determined from the bundled data (see notebook quality section)
 
 The dataset may contain information reproduced from the source website.
 Changes to the source website may result in differences between this dataset
@@ -53,4 +53,33 @@ provide a link to the relevant source page or pages.
 Suggested attribution:
 
 > Connections puzzle data collected from FiveLetterWords
-> (https://www.fiveletterwords.io/), accessed [DATE].
+> (https://www.fiveletterwords.io/), accessed on the date of the original collection (not recorded in this snapshot).
+
+## Local data pipeline
+
+`data/raw/connections.db` is the populated SQLite source used by
+`build_csvs.py` to regenerate `data/raw/connections2.csv`. The semantic
+statistics in `data/semantic_source/` are generated separately with a
+pretrained Sentence Transformers model (`python build_csvs.py --semantic`).
+Those regenerated values can differ from the bundled snapshots if the model,
+its version or the preprocessing changes. The notebook writes analytical
+outputs to `data/derived/`; the source data remains unchanged.
+
+The April 1, 2024 emoji puzzle is preserved in the raw data but excluded
+from analyses that assume ordinary written words.
+
+## Public repository and notebook results
+
+The public repository distributes the scraper, analysis code, documentation,
+and notebook **analysis outputs** (aggregate statistics, charts, model results).
+It does **not** distribute the SQLite database, puzzle-level raw CSV files,
+semantic CSV datasets, or embedding caches. These are stored locally under
+`data/`, which is ignored by Git. Notebook cells that display individual raw
+puzzle records should be reviewed before publication.
+
+To recreate the analysis without distributing the data, a reader can choose
+`DATA_MODE = "scrape"` and `REBUILD_SEMANTIC = True` in the first notebook
+cell. Scraping is optional, subject to source-site availability and applicable
+terms. The source content remains subject to its own rights and conditions.
+The newly collected dataset may differ from the one used to produce the
+published notebook outputs.
