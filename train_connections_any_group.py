@@ -70,14 +70,13 @@ def connection_solver():
         pairs = torch.stack([(e[:, i] * e[:, j]).sum(-1) for i, j in itertools.combinations(range(4), 2)], dim=1)
         return torch.cat([mean, spread, pairs.sort(dim=1).values], dim=1)
     
-    # Precompute candidate features once: only the small scorer is trained.
-    all_features = []
-    for _, words, _ in puzzles:
+    # Generate candidate features on demand instead of caching all puzzles in RAM.
+    def puzzle_features(i, candidate_combos):
+        _, words, _ = puzzles[i]
         ids = torch.tensor([word_to_idx[w] for w in words], device=DEVICE)
         with torch.no_grad():
-            chunks = [features(ids, c) for c in comb_t.split(256)]
-            all_features.append(torch.cat(chunks).cpu())
-    all_features = torch.stack(all_features)
+            return features(ids, candidate_combos)
+
     # Every puzzle has FOUR correct combination indices, one per color.
     combination_to_index = {tuple(c): i for i, c in enumerate(combinations)}
     labels = torch.tensor([
@@ -110,7 +109,7 @@ def connection_solver():
         def forward(self, x):
             return self.net(x).squeeze(-1)
     
-    model = Scorer(all_features.shape[-1]).to(DEVICE)
+    model = Scorer(emb.shape[1] * 2 + 6).to(DEVICE)
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=.01)
     train_indices = np.arange(len(train))
     val_indices = np.arange(len(train), len(train)+len(val))
@@ -122,7 +121,7 @@ def connection_solver():
         color_counts = {color: 0 for color in COLORS}
         with torch.no_grad():
             for i in indices:
-                scores = torch.cat([model(x.to(DEVICE)) for x in all_features[i].split(256)])
+                scores = torch.cat([model(puzzle_features(i, c)) for c in comb_t.split(256)])
                 target_indices = labels[i].tolist()
                 pred = scores.argmax().item()
                 any_correct += int(pred in target_indices)
@@ -145,7 +144,7 @@ def connection_solver():
             negative_pool = np.setdiff1d(np.arange(len(combinations)), positives)
             negatives = np.random.choice(negative_pool, size=NEGATIVES, replace=False)
             chosen = np.r_[positives, negatives]
-            x = all_features[i, chosen].to(DEVICE)
+            x = puzzle_features(i, comb_t[torch.as_tensor(chosen, device=DEVICE)])
             scores = model(x)
     
             # Multi-positive objective: reward probability assigned to ANY real group.
@@ -159,7 +158,7 @@ def connection_solver():
               f'median_best_group_rank={rank:.0f}')
         if accuracy > best:
             best, patience = accuracy, 0
-            torch.save(model.state_dict(), 'connections_group_scorer.pt')
+            torch.save(model.state_dict(), 'connections/models/connections_group_scorer.pt')
         else:
             patience += 1
             if patience >= 10:
@@ -177,7 +176,7 @@ def connection_solver():
     model.eval()
     for i in test_indices[:5]:
         with torch.no_grad():
-            scores = torch.cat([model(x.to(DEVICE)) for x in all_features[i].split(256)])
+            scores = torch.cat([model(puzzle_features(i, c)) for c in comb_t.split(256)])
         date, words, groups = puzzles[i]
         pred_idx = scores.argmax().item()
         predicted = combinations[pred_idx]

@@ -49,7 +49,7 @@ def difficulty_regression(puzzles, encoder=None):
     return fit_difficulty_mlp(puzzles, encoder)
 
 
-def puzzle_structure(puzzles, n_clusters=3):
+def puzzle_structure(puzzles, n_clusters=4):
     """Cluster *puzzles*, not words. PCA is for visualizing those puzzles."""
     clean = puzzles.dropna(subset=STRUCTURE_FEATURES).copy()
     X = clean[STRUCTURE_FEATURES].replace([np.inf, -np.inf], np.nan).dropna()

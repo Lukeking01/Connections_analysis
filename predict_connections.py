@@ -13,7 +13,7 @@ from sentence_transformers import SentenceTransformer
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 MODEL_NAME = 'sentence-transformers/all-mpnet-base-v2'
-CHECKPOINT = Path(r'C:\Users\Administrator\connections_group_scorer.pt')
+CHECKPOINT = Path(r'connections/models/connections_group_scorer.pt')
 
 class Scorer(nn.Module):
     def __init__(self, dimension):

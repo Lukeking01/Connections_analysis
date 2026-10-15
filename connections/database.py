@@ -120,7 +120,7 @@ def build_semantic_tables(words, model_name):
             })
 
     groups = pd.DataFrame(group_rows)
-    pairs = pd.DataFrame(pair_rows)
+    pairs = pd.DataFrame(pair_rows) 
     return groups, pairs
 
 
@@ -141,7 +141,7 @@ def main():
     args = parser.parse_args()
     database = args.database.resolve()
     words = read_words(database)
-    save_csv(words, PROJECT / "data/raw/connections2.csv")
+    save_csv(words, PROJECT / "data/raw/connections.csv")
     print(f"Found {words['puzzle_date'].nunique():,} puzzle dates")
     if args.semantic:
         groups, pairs = build_semantic_tables(words, args.model)

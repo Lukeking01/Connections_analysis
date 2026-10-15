@@ -64,10 +64,13 @@ class ContextualPairScorer(nn.Module):
             raise ValueError('hidden_dim must be divisible by heads')
         self.synonym_branch = synonym_branch
         self.project = nn.Sequential(nn.Linear(embedding_dim, hidden_dim), nn.LayerNorm(hidden_dim))
-        self.attention = nn.MultiheadAttention(hidden_dim, heads, dropout=dropout, batch_first=True)
+        # self.attention = nn.MultiheadAttention(hidden_dim, heads, dropout=dropout, batch_first=True)
         self.norm = nn.LayerNorm(hidden_dim)
         self.pair_head = nn.Sequential(nn.Linear(hidden_dim * 4 + 1 + int(synonym_branch), hidden_dim),
-                                       nn.GELU(), nn.Dropout(dropout), nn.Linear(hidden_dim, 1))
+                                       nn.GELU(), 
+                                       nn.Linear(hidden_dim, hidden_dim),
+                                       nn.Dropout(dropout), 
+                                       nn.Linear(hidden_dim, 1))
 
     def forward(self, embeddings, synonyms=None):
         """embeddings [batch,16,dim], synonyms [batch,16,16]; returns [batch,16,16]."""

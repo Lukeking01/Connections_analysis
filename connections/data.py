@@ -7,7 +7,7 @@ SPECIAL_PUZZLES = {"2024-04-01"}  # Emoji-only April Fools puzzle.
 
 def load_data():
     """Read the three source CSVs; preserve literal strings such as 'NA'."""
-    words = pd.read_csv(RAW / "connections2.csv", keep_default_na=False)
+    words = pd.read_csv(RAW / "connections.csv", keep_default_na=False)
     words["difficulty"] = pd.to_numeric(words["difficulty"], errors="coerce")
     words["puzzle_date"] = pd.to_datetime(words["puzzle_date"])
     groups = pd.read_csv(SEMANTIC / "semantic_group_statistics.csv")
