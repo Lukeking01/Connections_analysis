@@ -1,6 +1,6 @@
 # Connections Analysis
 
-**One entry point, one notebook, one database, one neural-ML module.**
+**One entry point, one notebook, one database.**
 
 The SQLite file `data/raw/connections.db` is the canonical source. Everything else (CSV tables, notebook analysis and ML results) is derived from it. A populated database is included for offline work.
 
