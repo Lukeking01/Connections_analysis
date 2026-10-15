@@ -1,4 +1,4 @@
-# Connections Analysis
+# Connections Analysis: by Emil Hulthin and Lukas Nord.
 
 **One entry point, one notebook, one database.**
 
