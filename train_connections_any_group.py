@@ -13,7 +13,7 @@ def connection_solver():
     SEED = 42
     random.seed(SEED); np.random.seed(SEED); torch.manual_seed(SEED)
     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-    DATA = r"C:\Users\Administrator\data\connections.csv"
+    DATA = r"data/raw/connections.csv"
     MODEL_NAME = 'sentence-transformers/all-mpnet-base-v2'
     EPOCHS, NEGATIVES, LR = 60, 48, 1e-3
     
