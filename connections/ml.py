@@ -366,4 +366,48 @@ def compare_classifiers(puzzles, encoder=None, max_validation_puzzles=None, **kw
     model, metrics, evaluation = fit_pair_mlp(puzzles, encoder, max_evaluation=max_validation_puzzles, **kwargs)
     return metrics, evaluation, model
 
+def show_matrix(words):
+    # Encode the words
+    device = next(model.parameters()).device
+
+    embeddings = torch.tensor(
+        np.asarray(
+            encoder.encode(words, normalize_embeddings=True)
+        ),
+        dtype=torch.float32,
+        device=device
+    ).unsqueeze(0)
+
+    # Generate synonym features
+    synonyms = torch.tensor(
+        synonym_matrix(words),
+        dtype=torch.float32,
+        device=device
+    ).unsqueeze(0)
+
+    # Get predicted pair probabilities
+    models["with_synonyms"].eval()
+
+    with torch.no_grad():
+        matrix = models["with_synonyms"](embeddings, synonyms).sigmoid()[0].cpu().numpy()
+
+    # Plot heatmap
+    plt.figure(figsize=(11, 9))
+
+    sns.heatmap(
+        matrix,
+        xticklabels=words,
+        yticklabels=words,
+        cmap="viridis",
+        vmin=0,
+        vmax=1,
+        annot=True,
+        fmt=".2f",
+        square=True
+    )
+
+    plt.title("Predicted pairwise group probabilities")
+    plt.tight_layout()
+    plt.show()
+    
 solve_with_classifier = solve_with_mlp
