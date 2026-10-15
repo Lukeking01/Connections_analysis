@@ -7,11 +7,7 @@ from itertools import combinations
 import difflib
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import make_pipeline
 from .paths import save_table
 
 PAIRS = list(combinations(range(16), 2))
@@ -69,45 +65,29 @@ def greedy_partition(probabilities):
 def solve_with_classifier(words, model, encoder=None):
     if len(words) != 16 or len(set(words)) != 16:
         raise ValueError("Provide exactly 16 distinct words.")
+    from .models.torch_solver import ContextualPairScorer
+    if isinstance(model, ContextualPairScorer):
+        from .mlp import solve_with_mlp
+        if encoder is None:
+            from .clustering import load_encoder
+            encoder = load_encoder()
+        return solve_with_mlp(words, model, encoder)
     vectors = encoder.encode(words, normalize_embeddings=True) if encoder else None
     scores = model.predict_proba(pair_features(words, vectors))[:, 1]
     return [[words[i] for i in group] for group in greedy_partition(scores)]
 
 
-def compare_classifiers(puzzles, encoder=None, max_test_puzzles=80):
-    """Chronological train/validation/test; compare lexical or semantic inputs."""
-    n = len(puzzles)
-    training, validation, testing = (puzzles[:int(n * .6)],
-                                     puzzles[int(n * .6):int(n * .8)],
-                                     puzzles[int(n * .8):])
-    X_train, y_train = labeled_pairs(training, encoder)
-    X_val, y_val = labeled_pairs(validation, encoder)
-    X_test, y_test = labeled_pairs(testing, encoder)
-    models = {
-        "Logistic regression": make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000, random_state=42)),
-        "Random forest": RandomForestClassifier(n_estimators=150, min_samples_leaf=5,
-                                                  random_state=42, n_jobs=-1),
-    }
-    rows = []
-    for name, model in models.items():
-        model.fit(X_train, y_train)
-        validation_auc = roc_auc_score(y_val, model.predict_proba(X_val)[:, 1])
-        rows.append({"model": name, "validation_AUC": validation_auc,
-                     "test_AUC": roc_auc_score(y_test, model.predict_proba(X_test)[:, 1])})
-    comparison = pd.DataFrame(rows)
-    # Choose the classifier using validation data only.
-    winner = comparison.loc[comparison.validation_AUC.idxmax(), "model"]
-    model = models[winner]
-    evaluation = []
-    for puzzle in testing[:max_test_puzzles]:
-        predicted = solve_with_classifier(puzzle["words"], model, encoder)
-        actual = [frozenset(w for w, c in zip(puzzle["words"], puzzle["colors"]) if c == color)
-                  for color in set(puzzle["colors"])]
-        correct = sum(frozenset(group) in actual for group in predicted)
-        evaluation.append({"puzzle_date": puzzle["date"], "correct_groups": correct,
-                           "fully_solved": int(correct == 4)})
-    results = pd.DataFrame(evaluation)
-    suffix = "semantic" if encoder else "lexical"
-    save_table(comparison, f"{suffix}_model_comparison.csv")
-    save_table(results, f"{suffix}_solver_evaluation.csv")
-    return comparison, results, model
+def compare_classifiers(puzzles, encoder=None, max_validation_puzzles=None, **kwargs):
+    """Compatibility wrapper: train ONLY the PyTorch contextual solver.
+
+    Returns (metrics, validation_puzzles, trained_model) in the legacy order.
+    An embedding encoder is required; loaded automatically if omitted.
+    """
+    from .mlp import fit_pair_mlp
+    if encoder is None:
+        from .clustering import load_encoder
+        encoder = load_encoder()
+    model, metrics, results = fit_pair_mlp(
+        puzzles, encoder, max_evaluation=max_validation_puzzles, **kwargs
+    )
+    return metrics, results, model

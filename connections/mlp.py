@@ -1,151 +1,183 @@
-"""Small neural-network extensions: word-pair solver and difficulty prediction.
+"""PyTorch MLP entry points for puzzle grouping and difficulty regression.
 
-Sentence Transformers supplies fixed word embeddings. Only scikit-learn MLPs
-are trained; the pretrained language model is never fine-tuned.
+The previous sklearn MLP implementations have been replaced. Public function
+names are retained for compatibility; sklearn remains for metrics/baselines.
 """
-from itertools import combinations
 import numpy as np
 import pandas as pd
-from sklearn.dummy import DummyRegressor
-from sklearn.metrics import mean_absolute_error, roc_auc_score
-from sklearn.neural_network import MLPClassifier, MLPRegressor
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler
-from .supervised import PAIRS, pair_features, greedy_partition
+import torch
+from torch import nn
 from .paths import save_table
 
 
-def split_puzzles(puzzles):
-    """Chronological 60/20/20 split; never split word pairs independently."""
-    ordered = sorted(puzzles, key=lambda p: p["date"])
-    n = len(ordered)
-    return ordered[:int(.6*n)], ordered[int(.6*n):int(.8*n)], ordered[int(.8*n):]
+def split_puzzles(puzzles, train_fraction=0.8):
+    """Chronological puzzle-level train/validation split; no test split."""
+    ordered = sorted(puzzles, key=lambda p: p['date'])
+    cutoff = int(len(ordered) * train_fraction)
+    if cutoff < 1 or cutoff >= len(ordered):
+        raise ValueError('At least two puzzles are required for train/validation')
+    return ordered[:cutoff], ordered[cutoff:]
 
 
 def encode_puzzles(puzzles, encoder):
-    """Encode each distinct word once; avoid repeated transformer calls."""
-    vocabulary = list(dict.fromkeys(w for p in puzzles for w in p["words"]))
+    vocabulary = list(dict.fromkeys(w for p in puzzles for w in p['words']))
     vectors = encoder.encode(vocabulary, batch_size=128, normalize_embeddings=True,
                              show_progress_bar=True)
     lookup = dict(zip(vocabulary, np.asarray(vectors)))
-    return {p["date"]: np.stack([lookup[w] for w in p["words"]]) for p in puzzles}
+    return {p['date']: np.stack([lookup[w] for w in p['words']]) for p in puzzles}
 
 
 def pair_dataset(puzzles, vectors):
-    """Lexical and semantic features, with known same-group labels."""
+    from .supervised import PAIRS, pair_features
     features, labels = [], []
     for p in puzzles:
-        features.append(pair_features(p["words"], vectors[p["date"]]))
-        labels.extend(int(p["colors"][i] == p["colors"][j]) for i, j in PAIRS)
+        features.append(pair_features(p['words'], vectors[p['date']]))
+        labels.extend(int(p['colors'][i] == p['colors'][j]) for i, j in PAIRS)
     return np.vstack(features), np.asarray(labels)
 
 
-def fit_pair_mlp(puzzles, encoder, max_evaluation=80):
-    """Train on early puzzles, validate, then evaluate on held-out later puzzles."""
-    train, val, test = split_puzzles(puzzles)
-    vectors = encode_puzzles(puzzles, encoder)
-    x_train, y_train = pair_dataset(train, vectors)
-    x_val, y_val = pair_dataset(val, vectors)
-    x_test, y_test = pair_dataset(test, vectors)
-
-    model = make_pipeline(
-        StandardScaler(),
-        MLPClassifier(hidden_layer_sizes=(32, 16), alpha=1.0,
-                      max_iter=200, early_stopping=True, random_state=42),
-    )
-    model.fit(x_train, y_train)
-    metrics = pd.DataFrame([{
-        "model": "MLP (lexical + semantic)",
-        "validation_AUC": roc_auc_score(y_val, model.predict_proba(x_val)[:, 1]),
-        "test_AUC": roc_auc_score(y_test, model.predict_proba(x_test)[:, 1]),
-        "training_puzzles": len(train), "validation_puzzles": len(val),
-        "test_puzzles": len(test),
-    }])
-    save_table(metrics, "mlp_pair_metrics.csv")
-
-    results = []
-    for p in test[:max_evaluation]:
-        scores = model.predict_proba(pair_features(p["words"], vectors[p["date"]]))[:, 1]
-        predicted = greedy_partition(scores)
-        actual = {frozenset(i for i, c in enumerate(p["colors"]) if c == color)
-                  for color in set(p["colors"])}
+def fit_pair_mlp(puzzles, encoder, max_evaluation=None, **training_kwargs):
+    """Fit the PyTorch contextual pair scorer and report train/validation metrics."""
+    from .training.train import train_solver, evaluate_solver
+    from .solvers.group_optimizer import optimal_partition
+    model, result = train_solver(puzzles, encoder, **training_kwargs)
+    summary = {row['split']: row for row in evaluate_solver(result)}
+    metrics = pd.DataFrame([{'model': 'PyTorch contextual attention + pooling',
+        'train_pair_auc': summary['train']['pair_auc'],
+        'validation_pair_auc': summary['validation']['pair_auc'],
+        'train_exact_puzzle_accuracy': summary['train']['exact_puzzle_accuracy'],
+        'validation_exact_puzzle_accuracy': summary['validation']['exact_puzzle_accuracy'],
+        'training_puzzles': len(result['train']), 'validation_puzzles': len(result['validation'])}])
+    save_table(metrics, 'mlp_pair_metrics.csv')
+    rows = []
+    offset = len(result['train'])
+    for i, puzzle in enumerate(result['validation'][:max_evaluation]):
+        predicted = optimal_partition(result['scores'][offset+i])
+        actual = {frozenset(j for j,c in enumerate(puzzle['colors']) if c==color)
+                  for color in set(puzzle['colors'])}
         correct = sum(frozenset(group) in actual for group in predicted)
-        results.append({"puzzle_date": p["date"], "correct_groups": correct,
-                        "fully_solved": int(correct == 4)})
-    evaluation = pd.DataFrame(results)
-    save_table(evaluation, "mlp_solver_evaluation.csv")
+        rows.append({'puzzle_date': puzzle['date'], 'correct_groups': correct,
+                     'fully_solved': int(correct == 4)})
+    evaluation = pd.DataFrame(rows)
+    save_table(evaluation, 'mlp_validation_puzzles.csv')
     return model, metrics, evaluation
 
 
-def solve_with_mlp(words, model, encoder):
-    """Predict four disjoint groups of four from a fresh set of 16 words."""
+def solve_with_mlp(words, model, encoder, use_synonyms=None):
+    """Solve 16 distinct words using the trained contextual PyTorch model."""
+    from .features.synonyms import synonym_matrix
+    from .solvers.group_optimizer import optimal_partition
     if len(words) != 16 or len(set(words)) != 16:
-        raise ValueError("Please provide exactly 16 distinct words.")
-    embeddings = encoder.encode(words, normalize_embeddings=True)
-    scores = model.predict_proba(pair_features(words, embeddings))[:, 1]
-    return [[words[i] for i in group] for group in greedy_partition(scores)]
+        raise ValueError('Provide exactly 16 distinct words.')
+    device = next(model.parameters()).device
+    embeddings = torch.as_tensor(np.asarray(encoder.encode(words, normalize_embeddings=True)),
+                                 dtype=torch.float32, device=device).unsqueeze(0)
+    if use_synonyms is None:
+        use_synonyms = model.synonym_branch
+    synonyms = torch.as_tensor(synonym_matrix(words) if use_synonyms else np.zeros((16,16)),
+                               dtype=torch.float32, device=device).unsqueeze(0)
+    model.eval()
+    with torch.no_grad():
+        scores = model(embeddings, synonyms).sigmoid()[0].cpu().numpy()
+    return [[words[i] for i in group] for group in optimal_partition(scores)]
 
 
 def difficulty_features(puzzles, vectors):
-    """Summarize a puzzle without using its solution or difficulty as features.
-
-    Pairwise lexical/semantic averages and spreads describe the 16 words.
-    No true group assignments enter these predictors.
-    """
+    """Word-only difficulty features, never solution-derived features."""
+    from .supervised import pair_features
     rows = []
     for p in puzzles:
-        pair_matrix = pair_features(p["words"], vectors[p["date"]])
-        row = {"puzzle_date": p["date"], "difficulty": p.get("difficulty", np.nan)}
-        for i, name in enumerate(["spelling_overlap", "length_difference",
-                                  "shared_letters", "same_prefix", "same_suffix",
-                                  "semantic_cosine"]):
-            row[f"{name}_mean"] = float(pair_matrix[:, i].mean())
-            row[f"{name}_std"] = float(pair_matrix[:, i].std())
-        lengths = np.array([len(w) for w in p["words"]], dtype=float)
-        row["mean_word_length"] = lengths.mean()
-        row["sd_word_length"] = lengths.std()
+        pair_matrix = pair_features(p['words'], vectors[p['date']])
+        row = {'puzzle_date': p['date'], 'difficulty': p.get('difficulty', np.nan)}
+        for i, name in enumerate(['spelling_overlap', 'length_difference',
+                                  'shared_letters', 'same_prefix', 'same_suffix',
+                                  'semantic_cosine']):
+            row[f'{name}_mean'] = float(pair_matrix[:, i].mean())
+            row[f'{name}_std'] = float(pair_matrix[:, i].std())
+        lengths = np.array([len(w) for w in p['words']], dtype=float)
+        row['mean_word_length'] = lengths.mean()
+        row['sd_word_length'] = lengths.std()
         rows.append(row)
     return pd.DataFrame(rows)
 
 
-def fit_difficulty_mlp(puzzles, encoder):
-    """Predict published difficulty using word-only features and a mean baseline."""
-    ordered = sorted(puzzles, key=lambda p: p["date"])
+class TorchDifficultyRegressor(nn.Module):
+    """Standardized tabular features followed by a PyTorch regression MLP."""
+    def __init__(self, n_features):
+        super().__init__()
+        self.network = nn.Sequential(nn.Linear(n_features, 16), nn.ReLU(),
+                                     nn.Linear(16, 1))
+        self.register_buffer('feature_mean', torch.zeros(n_features))
+        self.register_buffer('feature_std', torch.ones(n_features))
+        self.feature_columns = None
+
+    def forward(self, x):
+        return self.network((x - self.feature_mean) / self.feature_std).squeeze(-1)
+
+    def predict(self, frame):
+        self.eval()
+        if isinstance(frame, pd.DataFrame):
+            frame = frame[self.feature_columns].to_numpy()
+        with torch.no_grad():
+            return self(torch.as_tensor(np.asarray(frame), dtype=torch.float32)).numpy()
+
+
+def fit_difficulty_mlp(puzzles, encoder, epochs=300, patience=25, lr=1e-3, seed=42):
+    """Fit PyTorch regressor with chronological validation-based early stopping."""
+    from sklearn.metrics import mean_absolute_error
+    import copy
+    torch.manual_seed(seed)
+    ordered = sorted(puzzles, key=lambda p: p['date'])
     vectors = encode_puzzles(ordered, encoder)
     frame = difficulty_features(ordered, vectors)
-    save_table(frame, "mlp_difficulty_features.csv")
-    # Split by date BEFORE removing unrated puzzles.
-    train, val, test = split_puzzles(ordered)
-    dates = [{p["date"] for p in part} for part in (train, val, test)]
-    subsets = [frame.loc[frame.puzzle_date.isin(part)].dropna(subset=["difficulty"])
-               for part in dates]
-    columns = [c for c in frame if c not in ("puzzle_date", "difficulty")]
-    a, b, c = subsets
+    save_table(frame, 'mlp_difficulty_features.csv')
+    parts = split_puzzles(ordered)
+    dates = [{p['date'] for p in part} for part in parts]
+    subsets = [frame.loc[frame.puzzle_date.isin(d)].dropna(subset=['difficulty']) for d in dates]
     if min(map(len, subsets)) == 0:
-        raise ValueError("Each chronological split needs at least one rated puzzle.")
-    model = make_pipeline(StandardScaler(), MLPRegressor(
-        hidden_layer_sizes=(16,), alpha=10.0, max_iter=500,
-        early_stopping=True, random_state=42))
-    baseline = DummyRegressor(strategy="mean")
-    model.fit(a[columns], a.difficulty)
-    baseline.fit(a[columns], a.difficulty)
+        raise ValueError('Training and validation both need rated puzzles.')
+    columns = [c for c in frame if c not in ('puzzle_date','difficulty')]
+    a,b = subsets
+    arrays = [torch.tensor(s[columns].to_numpy(dtype='float32')) for s in subsets]
+    targets = [torch.tensor(s.difficulty.to_numpy(dtype='float32')) for s in subsets]
+    model = TorchDifficultyRegressor(len(columns))
+    model.feature_columns = columns
+    with torch.no_grad():
+        model.feature_mean.copy_(arrays[0].mean(0))
+        model.feature_std.copy_(arrays[0].std(0, unbiased=False).clamp_min(1e-6))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
+    best, state, wait = float('inf'), None, 0
+    for _ in range(epochs):
+        model.train()
+        optimizer.zero_grad()
+        loss = nn.functional.mse_loss(model(arrays[0]), targets[0])
+        loss.backward()
+        optimizer.step()
+        model.eval()
+        with torch.no_grad():
+            val_loss = nn.functional.mse_loss(model(arrays[1]), targets[1]).item()
+        if val_loss < best - 1e-6:
+            best, state, wait = val_loss, copy.deepcopy(model.state_dict()), 0
+        else:
+            wait += 1
+            if wait >= patience:
+                break
+    model.load_state_dict(state)
+    baseline = float(targets[0].mean())
     rows = []
-    for name, predictor in (("MLP (lexical + semantic)", model),
-                            ("Training-mean baseline", baseline)):
-        rows.append({"model": name,
-                     "validation_MAE": mean_absolute_error(b.difficulty, predictor.predict(b[columns])),
-                     "test_MAE": mean_absolute_error(c.difficulty, predictor.predict(c[columns])),
-                     "train_rated": len(a), "validation_rated": len(b), "test_rated": len(c)})
+    for name, predictions in [('PyTorch difficulty MLP', model.predict(b[columns])),
+                              ('Training-mean baseline', np.full(len(b), baseline))]:
+        rows.append({'model': name, 'validation_MAE': float(np.mean(np.abs(b.difficulty.to_numpy()-predictions))),
+                     'train_rated': len(a), 'validation_rated': len(b)})
     metrics = pd.DataFrame(rows)
-    save_table(metrics, "mlp_difficulty_metrics.csv")
+    save_table(metrics, 'mlp_difficulty_metrics.csv')
     return model, metrics
 
 
 def predict_difficulty(words, model, encoder):
-    """Estimate difficulty for a new puzzle from its 16 words alone."""
     if len(words) != 16:
-        raise ValueError("Provide exactly 16 words.")
-    record = {"date": "new", "words": list(words), "difficulty": np.nan}
-    embeddings = {"new": encoder.encode(words, normalize_embeddings=True)}
-    features = difficulty_features([record], embeddings)
-    return float(model.predict(features.drop(columns=["puzzle_date", "difficulty"]))[0])
+        raise ValueError('Provide exactly 16 words.')
+    record = {'date':'new','words':list(words),'difficulty':np.nan}
+    vectors = {'new':encoder.encode(words, normalize_embeddings=True)}
+    frame = difficulty_features([record], vectors)
+    return float(model.predict(frame)[0])

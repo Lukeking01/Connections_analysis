@@ -4,9 +4,6 @@ import pandas as pd
 from scipy.stats import spearmanr
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_absolute_error
-from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
 from .paths import save_table
 
@@ -43,32 +40,13 @@ def difficulty_correlations(puzzles):
     return table
 
 
-def difficulty_regression(puzzles):
-    """Chronological holdout, training-mean baseline and time-series CV."""
-    clean = puzzles.dropna(subset=FEATURES + ["difficulty"]).sort_values("puzzle_date")
-    X, y = clean[FEATURES], clean["difficulty"]
-    cutoff = int(0.8 * len(clean))
-    X_train, X_test = X.iloc[:cutoff], X.iloc[cutoff:]
-    y_train, y_test = y.iloc[:cutoff], y.iloc[cutoff:]
-    scaler = StandardScaler().fit(X_train)
-    model = LinearRegression().fit(scaler.transform(X_train), y_train)
-    predictions = model.predict(scaler.transform(X_test))
-    comparison = pd.DataFrame([
-        {"model": "Training mean", "test_MAE": mean_absolute_error(y_test, np.repeat(y_train.mean(), len(y_test)))},
-        {"model": "Linear regression", "test_MAE": mean_absolute_error(y_test, predictions)},
-    ])
-    save_table(comparison, "prediction_comparison.csv")
-    coefficients = pd.DataFrame({"feature": FEATURES, "coefficient": model.coef_})
-    save_table(coefficients, "linear_regression_coefficients.csv")
-    folds = []
-    for number, (train, test) in enumerate(TimeSeriesSplit(n_splits=5).split(X), 1):
-        fold_scaler = StandardScaler().fit(X.iloc[train])
-        fold_model = LinearRegression().fit(fold_scaler.transform(X.iloc[train]), y.iloc[train])
-        forecast = fold_model.predict(fold_scaler.transform(X.iloc[test]))
-        folds.append({"fold": number, "test_MAE": mean_absolute_error(y.iloc[test], forecast)})
-    cv = pd.DataFrame(folds)
-    save_table(cv, "time_series_cross_validation.csv")
-    return comparison, coefficients, cv
+def difficulty_regression(puzzles, encoder=None):
+    """Fit the PyTorch difficulty regressor (requires sentence encoder)."""
+    from .ml import fit_difficulty_mlp
+    if encoder is None:
+        from .clustering import load_encoder
+        encoder = load_encoder()
+    return fit_difficulty_mlp(puzzles, encoder)
 
 
 def puzzle_structure(puzzles, n_clusters=3):

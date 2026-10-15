@@ -58,9 +58,9 @@ Suggested attribution:
 ## Local data pipeline
 
 `data/raw/connections.db` is the populated SQLite source used by
-`build_csvs.py` to regenerate `data/raw/connections2.csv`. The semantic
+`python project.py build` to regenerate `data/raw/connections2.csv`. The semantic
 statistics in `data/semantic_source/` are generated separately with a
-pretrained Sentence Transformers model (`python build_csvs.py --semantic`).
+pretrained Sentence Transformers model (`python project.py build --semantic`).
 Those regenerated values can differ from the bundled snapshots if the model,
 its version or the preprocessing changes. The notebook writes analytical
 outputs to `data/derived/`; the source data remains unchanged.
