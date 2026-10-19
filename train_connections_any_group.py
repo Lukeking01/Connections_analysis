@@ -158,13 +158,13 @@ def connection_solver():
               f'median_best_group_rank={rank:.0f}')
         if accuracy > best:
             best, patience = accuracy, 0
-            torch.save(model.state_dict(), 'connections/models/connections_group_scorer.pt')
+            torch.save(model.state_dict(), 'connections/models/saved/connections_group_scorer.pt')
         else:
             patience += 1
             if patience >= 10:
                 print('Early stopping'); break
     
-    model.load_state_dict(torch.load('connections_group_scorer.pt', map_location=DEVICE, weights_only=True))
+    model.load_state_dict(torch.load('connections/models/saved/connections_group_scorer.pt', map_location=DEVICE, weights_only=True))
     for name, indices in [('TRAIN', np.arange(len(train))),
                           ('VALIDATION', val_indices), ('TEST', test_indices)]:
         accuracy, yellow_accuracy, rank, color_counts = evaluate(indices)

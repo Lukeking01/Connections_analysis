@@ -64,13 +64,10 @@ class ContextualPairScorer(nn.Module):
             raise ValueError('hidden_dim must be divisible by heads')
         self.synonym_branch = synonym_branch
         self.project = nn.Sequential(nn.Linear(embedding_dim, hidden_dim), nn.LayerNorm(hidden_dim))
-        # self.attention = nn.MultiheadAttention(hidden_dim, heads, dropout=dropout, batch_first=True)
+        self.attention = nn.MultiheadAttention(hidden_dim, heads, dropout=dropout, batch_first=True)
         self.norm = nn.LayerNorm(hidden_dim)
         self.pair_head = nn.Sequential(nn.Linear(hidden_dim * 4 + 1 + int(synonym_branch), hidden_dim),
-                                       nn.GELU(), 
-                                       nn.Linear(hidden_dim, hidden_dim),
-                                       nn.Dropout(dropout), 
-                                       nn.Linear(hidden_dim, 1))
+                                       nn.GELU(), nn.Dropout(dropout), nn.Linear(hidden_dim, 1))
 
     def forward(self, embeddings, synonyms=None):
         """embeddings [batch,16,dim], synonyms [batch,16,16]; returns [batch,16,16]."""
@@ -142,14 +139,17 @@ def pair_dataset(puzzles, vectors):
 
 def fit_pair_mlp(puzzles, encoder, max_evaluation=None, **training_kwargs):
     """Fit the PyTorch contextual pair scorer and report train/validation metrics."""
+    
     model, result = train_solver(puzzles, encoder, **training_kwargs)
     summary = {row['split']: row for row in evaluate_solver(result)}
-    metrics = pd.DataFrame([{'model': 'PyTorch contextual attention + pooling',
+    metrics = pd.DataFrame([{
+        'model': 'PyTorch contextual attention + pooling',
         'train_pair_auc': summary['train']['pair_auc'],
         'validation_pair_auc': summary['validation']['pair_auc'],
         'train_exact_puzzle_accuracy': summary['train']['exact_puzzle_accuracy'],
         'validation_exact_puzzle_accuracy': summary['validation']['exact_puzzle_accuracy'],
         'training_puzzles': len(result['train']), 'validation_puzzles': len(result['validation'])}])
+    
     save_table(metrics, 'mlp_pair_metrics.csv')
     rows = []
     offset = len(result['train'])
@@ -366,48 +366,4 @@ def compare_classifiers(puzzles, encoder=None, max_validation_puzzles=None, **kw
     model, metrics, evaluation = fit_pair_mlp(puzzles, encoder, max_evaluation=max_validation_puzzles, **kwargs)
     return metrics, evaluation, model
 
-def show_matrix(words):
-    # Encode the words
-    device = next(model.parameters()).device
-
-    embeddings = torch.tensor(
-        np.asarray(
-            encoder.encode(words, normalize_embeddings=True)
-        ),
-        dtype=torch.float32,
-        device=device
-    ).unsqueeze(0)
-
-    # Generate synonym features
-    synonyms = torch.tensor(
-        synonym_matrix(words),
-        dtype=torch.float32,
-        device=device
-    ).unsqueeze(0)
-
-    # Get predicted pair probabilities
-    models["with_synonyms"].eval()
-
-    with torch.no_grad():
-        matrix = models["with_synonyms"](embeddings, synonyms).sigmoid()[0].cpu().numpy()
-
-    # Plot heatmap
-    plt.figure(figsize=(11, 9))
-
-    sns.heatmap(
-        matrix,
-        xticklabels=words,
-        yticklabels=words,
-        cmap="viridis",
-        vmin=0,
-        vmax=1,
-        annot=True,
-        fmt=".2f",
-        square=True
-    )
-
-    plt.title("Predicted pairwise group probabilities")
-    plt.tight_layout()
-    plt.show()
-    
 solve_with_classifier = solve_with_mlp
